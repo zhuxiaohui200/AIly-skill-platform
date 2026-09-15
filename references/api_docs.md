@@ -607,13 +607,24 @@ python3 scripts/api_client.py confirm_my_work_hours \
 | CLI | `add_project_moment` |
 | HTTP | `POST /manage_api/project_moment/add` |
 | Body | `project_id`、`module`（meet/risk/problem）、`type`、`content`、`user_id`（数组）；风险/问题需 `risk_level` |
+| 会议待办 | 传 `todos` JSON 数组（多条拆开）；Skill 写入 `remark` 为 `[{"text","userIds","userNames"},...]`（与网页端一致）。也可传多行 `remark`，会按行/编号拆分 |
+| 相关人员 | `user_name`/`attendees`（参会/关注人）→ `user_id`；待办责任人写在 `todos[].assignees`，会写入对应 `userIds`，并合并进 `user_id` |
 
-别名：`project_name`/`sj_num`→`project_id`；`会议`/`风险`/`问题`→`module`；`user_name`（逗号分隔）→`user_id`。
+别名：`project_name`/`sj_num`→`project_id`；`会议`/`风险`/`问题`→`module`；`user_name`/`attendees`（逗号分隔）→`user_id`。
 
 ```bash
+# 会议：多条待办 + 参会人
 python3 scripts/api_client.py add_project_moment \
   --param project_name 某某展厅 --param module 会议 \
-  --param type 周会 --param content 进度同步 --param user_name 张三,李四
+  --param type 周会 --param content 进度同步 \
+  --param user_name 张三,李四 \
+  --param todos '[{"text":"补排期","assignees":["张三"]},{"text":"发纪要","assignees":["李四"]}]'
+
+# 风险
+python3 scripts/api_client.py add_project_moment \
+  --param project_name 某某展厅 --param module 风险 \
+  --param type 技术风险 --param content 接口延期 \
+  --param risk_level 高 --param user_name 张三 --param remark 跟进排期
 ```
 
 ### add_project_task_estimate
@@ -700,7 +711,7 @@ python3 scripts/api_client.py add_project_task_estimate \
 | `finish_project_task` | `POST project_task/finish` | 完成任务 |
 | `save_project_overview_value` | `POST project_overview/save_value` | 保存项目价值 |
 | `add_not_project_demand` | `POST project_not_task/add` | 新增非项目需求 |
-| `add_not_project_task` | `POST project_not_task/add_task` | 新增非项目任务 |
+| `add_not_project_task` | `POST project_not_task/add_task` | 新增非项目任务；未传 `status` 时默认 `doing`（进行中） |
 | `finish_not_project_task` | `POST project_not_task/finish_task` | 完成非项目任务 |
 | `update_not_project_estimate` | `PUT project_not_task_estimate/update` | 更新非项目任务工时；已确认或历史不可改 |
 | `add_apply_demand` | `POST produce_demand/add_apply_demand` | 新增申请制作需求 |

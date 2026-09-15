@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, timedelta
 from typing import Any, Callable
 
@@ -36,6 +37,18 @@ _CONFIRM_LABEL = {
     "ConfirmTaskEstimate": "项目工时",
     "ConfirmNotTaskEstimate": "非项目工时",
 }
+
+# 会议待办落库格式与前端 AddMomentForm.serializeTodos 一致：
+# remark = [{"text":"...","userIds":[1],"userNames":["张三"]}, ...]
+_AT_NAME_RE = re.compile(r"@([^\s@,，；;：:、]+)")
+_TODO_LINE_PREFIX_RE = re.compile(
+    r"^(?:待办事项|待办|后续动作|后续安排|行动项|Action\s*Items?)\s*[:：]?\s*",
+    re.I,
+)
+_NUMBERED_PREFIX_RE = re.compile(r"^[\d]+[\.、\)]\s*|^[-•●▪]\s*|\[\s*[xX ]?\s*\]\s*")
+_ASSIGNEE_PREFIX_RE = re.compile(r"^([^：:]{1,20})[：:]\s*(.+)$")
+_MAX_TODOS = 30
+_MAX_TODO_TEXT = 500
 
 # 同一任务同一天（同一填写人）只能有一条工时；跨天可各有一条；同日已存在则必须改走 update
 # 填报 date 还必须落在任务 start_date～end_date 内
@@ -765,16 +778,33 @@ def _resolve_update_project_moment(params: dict[str, Any]) -> dict[str, Any]:
         out["id"] = int(out.pop("moment_id"))
     elif out.get("id") not in (None, ""):
         out["id"] = int(out["id"])
-    user_names = out.pop("user_names", None) or out.pop("user_name", None)
-    if user_names and not out.get("user_id"):
-        ids: list[int] = []
-        for part in str(user_names).replace("，", ",").split(","):
-            name = part.strip()
-            if name:
-                ids.append(int(api_client.resolve_user_id(name)))
-        out["user_id"] = ids
-    elif out.get("user_id") and not isinstance(out.get("user_id"), list):
-        out["user_id"] = api_client._parse_int_list(out["user_id"])
+    # 会议待办：同 add，支持 todos / 多行 remark → JSON；相关人员写入 user_id
+    module = str(out.get("module") or "").strip()
+    module = _MOMENT_MODULE_MAP.get(module, _MOMENT_MODULE_MAP.get(module.lower(), module))
+    if module:
+        out["module"] = module
+    if module == "meet" or out.get("todos") not in (None, "") or (
+        isinstance(out.get("remark"), str)
+        and out.get("remark", "").strip().startswith("[")
+    ):
+        # update 常不传 module；有 todos 或 JSON remark 时按会议待办处理
+        _apply_meet_todos_to_body(out)
+    else:
+        user_ids = _collect_moment_user_ids(out, None)
+        for key in (
+            "user_names",
+            "user_name",
+            "attendees",
+            "related_persons",
+            "related_person",
+            "related_users",
+            "todos",
+        ):
+            out.pop(key, None)
+        if user_ids:
+            out["user_id"] = user_ids
+        elif out.get("user_id") and not isinstance(out.get("user_id"), list):
+            out["user_id"] = api_client._parse_int_list(out["user_id"])
     return out
 
 
@@ -956,6 +986,36 @@ def _resolve_demand_pool_params(params: list[Any], *, feedback: bool) -> list[di
     return resolved
 
 
+_TASK_STATUS_MAP = {
+    "": "doing",
+    "doing": "doing",
+    "进行中": "doing",
+    "in_progress": "doing",
+    "in-progress": "doing",
+    "wait": "wait",
+    "待开始": "wait",
+    "未开始": "wait",
+    "pending": "wait",
+    "done": "done",
+    "已完成": "done",
+    "完成": "done",
+    "pause": "pause",
+    "暂停": "pause",
+    "closed": "closed",
+    "已关闭": "closed",
+    "cancel": "cancel",
+    "已取消": "cancel",
+}
+
+
+def _normalize_task_status(value: Any, *, default: str = "doing") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    mapped = _TASK_STATUS_MAP.get(text) or _TASK_STATUS_MAP.get(text.lower())
+    return mapped or text
+
+
 def _resolve_add_not_project_demand(params: dict[str, Any]) -> dict[str, Any]:
     out = _resolve_not_project_id_value(dict(params))
     out = _resolve_assigned_to_list(out)
@@ -967,6 +1027,8 @@ def _resolve_add_not_project_demand(params: dict[str, Any]) -> dict[str, Any]:
         out["project_id"] = int(out["project_id"])
     if out.get("plan_hour") not in (None, ""):
         out["plan_hour"] = float(out["plan_hour"])
+    # 与网页端一致：新建默认进行中，否则状态为空无法正常推进/填花费
+    out["status"] = _normalize_task_status(out.get("status"), default="doing")
     return out
 
 
@@ -988,6 +1050,8 @@ def _resolve_add_not_project_task(params: dict[str, Any]) -> dict[str, Any]:
         out["plan_hour"] = float(out["plan_hour"])
     if out.get("option_ids") and not isinstance(out.get("option_ids"), list):
         out["option_ids"] = api_client._parse_int_list(out["option_ids"])
+    # 与网页端 TaskBatchCreateDialog / ManagementWorkHourEntry 一致：默认 doing
+    out["status"] = _normalize_task_status(out.get("status"), default="doing")
     return out
 
 
@@ -1070,6 +1134,291 @@ def _resolve_approve_publish_apply(params: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _parse_jsonish(value: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return value
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return value
+
+
+def _split_person_names(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            parts.extend(_split_person_names(item))
+        return parts
+    text = str(value).strip().lstrip("@").strip()
+    if not text:
+        return []
+    out: list[str] = []
+    for part in re.split(r"[,，;；、\n]+", text):
+        name = part.strip().lstrip("@").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _resolve_person_ids(names: list[str]) -> tuple[list[int], list[str], list[str]]:
+    """Return (ids, resolved_names_aligned_to_ids, unmatched_names)."""
+    import api_client
+
+    ids: list[int] = []
+    resolved: list[str] = []
+    unmatched: list[str] = []
+    seen: set[int] = set()
+    for name in names:
+        clean = str(name or "").strip().lstrip("@").strip()
+        if not clean:
+            continue
+        try:
+            uid = int(api_client.resolve_user_id(clean))
+        except api_client.ClientError as e:
+            if e.error == "auth_required":
+                raise
+            unmatched.append(clean)
+            continue
+        except (TypeError, ValueError, OSError):
+            unmatched.append(clean)
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        ids.append(uid)
+        resolved.append(clean)
+    return ids, resolved, unmatched
+
+
+def _parse_todo_line(line: str) -> dict[str, Any] | None:
+    text = str(line or "").strip()
+    text = _NUMBERED_PREFIX_RE.sub("", text).strip()
+    text = _TODO_LINE_PREFIX_RE.sub("", text).strip()
+    if not text or text in {"待办", "待办事项", "后续动作", "后续安排", "行动项", "无", "无。"}:
+        return None
+    assignees = [n.strip().lstrip("@") for n in _AT_NAME_RE.findall(text) if n.strip()]
+    body = _AT_NAME_RE.sub("", text)
+    body = re.sub(r"（来自[^）]*）|\(来自[^)]*\)", "", body)
+    body = re.sub(r"\s+", " ", body).strip(" ：:.-")
+    prefix = _ASSIGNEE_PREFIX_RE.match(body)
+    if prefix:
+        head, rest = prefix.group(1).strip(), prefix.group(2).strip()
+        # 「张三、李四：做XX」→ assignees + text
+        head_names = _split_person_names(head)
+        if head_names and len(head) <= 40 and rest:
+            for n in head_names:
+                if n not in assignees:
+                    assignees.append(n)
+            body = rest
+    if not body:
+        return None
+    return {"text": body[:_MAX_TODO_TEXT], "assignees": assignees}
+
+
+def _todos_from_plain_remark(remark: str) -> list[dict[str, Any]]:
+    text = str(remark or "").strip()
+    if not text:
+        return []
+    lines = re.split(r"\n+", text)
+    # 单行但含 1、2、 编号时也拆开
+    if len(lines) == 1 and re.search(r"(?:^|[\s])\d+[\.、\)]\s*\S", text):
+        lines = re.split(r"(?=(?:^|[\s])\d+[\.、\)]\s*)", text)
+    todos: list[dict[str, Any]] = []
+    for raw in lines:
+        item = _parse_todo_line(raw)
+        if not item:
+            continue
+        todos.append(item)
+        if len(todos) >= _MAX_TODOS:
+            break
+    return todos
+
+
+def _normalize_meet_todos(raw: Any) -> list[dict[str, Any]]:
+    """Normalize to frontend shape: [{text, userIds, userNames}]."""
+    parsed = _parse_jsonish(raw)
+    if isinstance(parsed, str):
+        # 非 JSON：按多行/编号拆成多条待办
+        draft = _todos_from_plain_remark(parsed)
+    elif isinstance(parsed, list):
+        draft = []
+        for row in parsed[:_MAX_TODOS]:
+            if isinstance(row, str):
+                item = _parse_todo_line(row)
+                if item:
+                    draft.append(item)
+                continue
+            if not isinstance(row, dict):
+                continue
+            text = str(row.get("text") or row.get("content") or row.get("todo") or "").strip()
+            assignees = (
+                row.get("assignees")
+                or row.get("user_names")
+                or row.get("userNames")
+                or row.get("owners")
+                or []
+            )
+            user_ids_raw = row.get("userIds") or row.get("user_ids") or row.get("uids") or []
+            names = _split_person_names(assignees)
+            ids_from_row: list[int] = []
+            if isinstance(user_ids_raw, list):
+                for x in user_ids_raw:
+                    try:
+                        ids_from_row.append(int(x))
+                    except (TypeError, ValueError):
+                        pass
+            elif user_ids_raw not in (None, ""):
+                try:
+                    ids_from_row = [int(x) for x in str(user_ids_raw).split(",") if str(x).strip()]
+                except (TypeError, ValueError):
+                    ids_from_row = []
+            if not text and not names and not ids_from_row:
+                continue
+            draft.append({"text": text[:_MAX_TODO_TEXT], "assignees": names, "userIds": ids_from_row})
+    else:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in draft:
+        text = str(item.get("text") or "").strip()
+        names = _split_person_names(item.get("assignees") or item.get("user_names") or item.get("userNames"))
+        preset_ids = item.get("userIds") or item.get("user_ids") or []
+        ids: list[int] = []
+        if isinstance(preset_ids, list):
+            for x in preset_ids:
+                try:
+                    ids.append(int(x))
+                except (TypeError, ValueError):
+                    pass
+        resolved_ids, resolved_names, unmatched = _resolve_person_ids(names)
+        # 合并预设 id 与按名解析 id
+        merged_ids: list[int] = []
+        seen: set[int] = set()
+        id_to_name: dict[int, str] = {}
+        for uid, name in zip(resolved_ids, resolved_names):
+            id_to_name[uid] = name
+        for uid in ids + resolved_ids:
+            if uid in seen:
+                continue
+            seen.add(uid)
+            merged_ids.append(uid)
+        display_names = [id_to_name.get(uid, "") for uid in merged_ids]
+        if not display_names and names and not merged_ids:
+            display_names = list(names)
+        if unmatched and not merged_ids:
+            # 人名全未匹配时仍保留 text，userIds 空（与前端 AI 回填一致）
+            pass
+        if not text and not merged_ids:
+            continue
+        out.append(
+            {
+                "text": text,
+                "userIds": merged_ids,
+                "userNames": display_names,
+            }
+        )
+    return out
+
+
+def _serialize_meet_todos(todos: list[dict[str, Any]]) -> str:
+    if not todos:
+        return ""
+    return json.dumps(todos, ensure_ascii=False)
+
+
+def _collect_moment_user_ids(params: dict[str, Any], todo_items: list[dict[str, Any]] | None = None) -> list[int]:
+    import api_client
+
+    ids: list[int] = []
+    seen: set[int] = set()
+
+    def _add(uid: int) -> None:
+        if uid in seen:
+            return
+        seen.add(uid)
+        ids.append(uid)
+
+    raw_ids = params.get("user_id")
+    if raw_ids not in (None, "") and not isinstance(raw_ids, str):
+        try:
+            for uid in api_client._parse_int_list(raw_ids):
+                _add(int(uid))
+        except Exception:
+            pass
+    elif isinstance(raw_ids, str) and raw_ids.strip():
+        # 可能是 "1,2" 或误传成姓名
+        if re.fullmatch(r"[\d,\s]+", raw_ids.strip()):
+            for uid in api_client._parse_int_list(raw_ids):
+                _add(int(uid))
+
+    name_blob = (
+        params.get("user_names")
+        or params.get("user_name")
+        or params.get("attendees")
+        or params.get("related_persons")
+        or params.get("related_person")
+        or params.get("related_users")
+    )
+    for uid in _resolve_person_ids(_split_person_names(name_blob))[0]:
+        _add(uid)
+
+    for todo in todo_items or []:
+        for uid in todo.get("userIds") or []:
+            try:
+                _add(int(uid))
+            except (TypeError, ValueError):
+                pass
+    return ids
+
+
+def _apply_meet_todos_to_body(out: dict[str, Any]) -> list[str]:
+    """For meet module: split todos into JSON remark; merge related persons into user_id."""
+    warnings: list[str] = []
+    raw_todos = out.pop("todos", None)
+    raw_remark = out.get("remark")
+
+    todo_items: list[dict[str, Any]] = []
+    if raw_todos not in (None, ""):
+        todo_items = _normalize_meet_todos(raw_todos)
+    elif raw_remark not in (None, ""):
+        parsed = _parse_jsonish(raw_remark)
+        if isinstance(parsed, list):
+            todo_items = _normalize_meet_todos(parsed)
+        else:
+            # 纯文本 remark：拆成多条（单条纯文本也包成一条，便于挂相关人）
+            todo_items = _normalize_meet_todos(str(raw_remark))
+
+    if todo_items:
+        out["remark"] = _serialize_meet_todos(todo_items)
+    elif raw_remark in (None, ""):
+        out["remark"] = ""
+
+    user_ids = _collect_moment_user_ids(out, todo_items)
+    for key in (
+        "user_names",
+        "user_name",
+        "attendees",
+        "related_persons",
+        "related_person",
+        "related_users",
+        "todos",
+    ):
+        out.pop(key, None)
+    out["user_id"] = user_ids
+    if not user_ids:
+        warnings.append("未解析到参会/相关人员 user_id，请传 user_name/attendees 或在 todos[].assignees 写责任人")
+    if todo_items and all(not t.get("userIds") for t in todo_items):
+        warnings.append("待办项未匹配到责任人账号，请核对 todos[].assignees / user_names 昵称")
+    return warnings
+
+
 def _resolve_add_project_moment(params: dict[str, Any]) -> dict[str, Any]:
     import api_client
 
@@ -1087,16 +1436,25 @@ def _resolve_add_project_moment(params: dict[str, Any]) -> dict[str, Any]:
     if "module" in out:
         mod = str(out["module"]).strip()
         out["module"] = _MOMENT_MODULE_MAP.get(mod, _MOMENT_MODULE_MAP.get(mod.lower(), mod))
-    user_names = out.pop("user_names", None) or out.pop("user_name", None)
-    if user_names and not out.get("user_id"):
-        ids: list[int] = []
-        for part in str(user_names).replace("，", ",").split(","):
-            name = part.strip()
-            if name:
-                ids.append(int(api_client.resolve_user_id(name)))
-        out["user_id"] = ids
-    elif out.get("user_id") and not isinstance(out.get("user_id"), list):
-        out["user_id"] = api_client._parse_int_list(out["user_id"])
+
+    module = str(out.get("module") or "")
+    if module == "meet":
+        _apply_meet_todos_to_body(out)
+    else:
+        # 风险/问题：remark 为解决方案纯文本；相关人员 → user_id
+        user_ids = _collect_moment_user_ids(out, None)
+        for key in (
+            "user_names",
+            "user_name",
+            "attendees",
+            "related_persons",
+            "related_person",
+            "related_users",
+            "todos",
+        ):
+            out.pop(key, None)
+        out["user_id"] = user_ids
+
     if out.get("project_id") not in (None, ""):
         out["project_id"] = int(out["project_id"])
     return out
@@ -1148,12 +1506,23 @@ def _warnings_add_moment(body: dict[str, Any]) -> list[str]:
         warnings.append("未指定 user_id/user_name，提交可能失败")
     if not body.get("type"):
         warnings.append("未指定 type（子类型），提交可能失败")
+    if module == "meet":
+        remark = body.get("remark")
+        todos = _parse_jsonish(remark) if remark else []
+        if isinstance(todos, list) and todos:
+            if any(isinstance(t, dict) and not t.get("userIds") for t in todos):
+                warnings.append("部分待办未挂相关人员，建议在 todos[].assignees 或 user_name 中补充")
+        elif remark:
+            warnings.append(
+                "会议待办建议传 todos 数组（多条拆开），Skill 会序列化为 JSON remark；"
+                "纯文本 remark 已尽量按行拆分"
+            )
     return warnings
 
 
 def _preview_add_moment(body: dict[str, Any]) -> dict[str, Any]:
     module = body.get("module", "")
-    return {
+    preview: dict[str, Any] = {
         "project_id": body.get("project_id"),
         "module": module,
         "module_label": _MODULE_LABEL.get(str(module), module),
@@ -1163,6 +1532,12 @@ def _preview_add_moment(body: dict[str, Any]) -> dict[str, Any]:
         "risk_level": body.get("risk_level"),
         "user_id": body.get("user_id"),
     }
+    if module == "meet":
+        todos = _parse_jsonish(body.get("remark"))
+        if isinstance(todos, list):
+            preview["todo_count"] = len(todos)
+            preview["todos"] = todos
+    return preview
 
 
 def _preview_add_project_estimate(body: dict[str, Any]) -> dict[str, Any]:
@@ -1258,12 +1633,17 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
             "type",
             "content",
             "remark",
+            "todos",
             "risk_level",
             "status",
             "done_time",
             "user_id",
             "user_name",
             "user_names",
+            "attendees",
+            "related_person",
+            "related_persons",
+            "related_users",
             "dry_run",
             "confirm",
             "confirm_token",
@@ -1449,15 +1829,21 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
         "params": [
             "id",
             "moment_id",
+            "module",
             "type",
             "content",
             "remark",
+            "todos",
             "risk_level",
             "status",
             "done_time",
             "user_id",
             "user_name",
             "user_names",
+            "attendees",
+            "related_person",
+            "related_persons",
+            "related_users",
             "dry_run",
             "confirm",
             "confirm_token",
@@ -1469,12 +1855,7 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
         "body_params": ["id", "type", "content", "remark", "risk_level", "status", "done_time", "user_id"],
         "body_required": ["id", "type", "content", "user_id"],
         "body_required_preview": ["id", "content"],
-        "preview_summary": lambda b: {
-            "moment_id": b.get("id"),
-            "type": b.get("type"),
-            "content": b.get("content"),
-            "user_id": b.get("user_id"),
-        },
+        "preview_summary": _preview_add_moment,
         "preview_warnings": _warnings_add_moment,
     },
     "add_bug": {
@@ -1718,6 +2099,7 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
             "plan_hour",
             "assigned_to",
             "assignee_name",
+            "status",
             "dry_run",
             "confirm",
             "confirm_token",
@@ -1746,6 +2128,7 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
             "demand_id": b.get("pid"),
             "name": b.get("name"),
             "plan_hour": b.get("plan_hour"),
+            "status": b.get("status"),
         },
     },
     "finish_not_project_task": {

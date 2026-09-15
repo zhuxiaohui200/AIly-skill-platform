@@ -323,7 +323,7 @@ python3 scripts/api_client.py get_task_list --param start_date 2026-09-01
 | 字典常量 | `get_bug_const` / `get_publish_normal_const` / `get_project_moment_config_list` / `get_apply_demand_consts` | 写操作前预取 | 减少 type/status 猜测 |
 | 代确认/批量审核工时 | `confirm_user_work_hours` / `approve_work_hour_batch` | **写** 两阶段 | PM 确认下属工时 |
 | 非项目/更新工时 | `add_not_project_estimate` / `update_not_project_estimate` / `update_project_task_estimate` | **写** | 更新时同样按项目/非项目选接口 |
-| 非项目需求/任务 | `add_not_project_demand` / `add_not_project_task` / `finish_not_project_task` | **写** 两阶段 | 非项目闭环 |
+| 非项目需求/任务 | `add_not_project_demand` / `add_not_project_task` / `finish_not_project_task` | **写** 两阶段；新建任务默认 `status=doing`（进行中） | 非项目闭环 |
 | 制作需求/反馈 | `add_apply_demand` / `add_demand_pool` / `add_feedback_demand_pool` | **写** 两阶段；可先 `get_apply_demand_consts` | 申请制作需求、拆解需求池、新增反馈 |
 | 递交通过 | `approve_publish_apply` | **写** 两阶段 | 通过递交申请并排期 |
 | 登记 BUG / 申请递交 | `add_bug` / `apply_publish` / `reject_publish_apply` | **写**；BUG 可先 `get_bug_const` | QA/PM 日常操作 |
@@ -417,7 +417,7 @@ python3 scripts/api_client.py add_project_task_estimate \
 | 操作 | 场景 | 关键参数 |
 |------|------|---------|
 | `confirm_my_work_hours` | 确认待确认工时 | `id`（或 `estimate_id`）+ `confirm_type`（`项目`/`非项目`） |
-| `add_project_moment` | 新增会议/风险/问题动态 | `project_name`/`sj_num` + `module` + `content` + `type` + `user_name` |
+| `add_project_moment` | 新增会议/风险/问题动态 | `project_name`/`sj_num` + `module` + `content` + `type` + `user_name`；**会议**务必传 `todos` 多条（`text`+`assignees`），相关人员写 `user_name`/`attendees` |
 | `add_project_task_estimate` | **仅**登记项目任务工时 | `task_id` + `consumed` + `remark`；可选 `date`、`user_name` |
 | `add_not_project_estimate` | **仅**登记非项目任务工时 | `task_id` + `consumed` + `remark`；可选 `date`、`user_name` |
 
@@ -444,6 +444,19 @@ python3 scripts/api_client.py add_project_moment \
   --param content 接口延期 --param type 技术风险 \
   --param risk_level 高 --param user_name 张三
 ```
+
+用户：「记一条会议动态，待办：张三补排期、李四发纪要。」
+
+```bash
+# 会议待办必须拆成多条 todos，并写上责任人；参会人用 user_name
+python3 scripts/api_client.py add_project_moment \
+  --param project_name 某某展厅 --param module 会议 \
+  --param type 周会 --param content 进度同步 \
+  --param user_name 张三,李四 \
+  --param todos '[{"text":"补排期","assignees":["张三"]},{"text":"发纪要","assignees":["李四"]}]'
+```
+
+**会议待办纪律**：禁止把多条待办揉成一整段 `remark` 纯文本；应传 `todos` 数组。Skill 会序列化为网页端同款 JSON（含每条 `userIds`），并把责任人/参会人写入 `user_id`。
 
 若预览 `warnings` 提示缺字段，先追问用户补全，再重新 `dry_run`，不要带着无效 token 强行 `confirm`。
 

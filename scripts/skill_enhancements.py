@@ -285,9 +285,10 @@ def attach_skill_summary(operation: str, payload: Any, enabled: bool = True) -> 
 
 
 _WARNING_AGENT_HINTS: dict[str, str] = {
-    "user_id": "请向用户追问相关人员（可传 user_name，多人用逗号分隔）",
+    "user_id": "请向用户追问相关人员（可传 user_name/attendees，多人用逗号分隔；会议待办责任人写在 todos[].assignees）",
     "user_name": "请向用户追问相关人员姓名",
     "type": "请向用户确认动态子类型（可先调用 get_project_moment_config_list 查字典）",
+    "todos": "会议动态请把待办拆成多条 todos（text+assignees），不要整段塞进 remark",
     "risk_level": "风险/问题类动态需填写 risk_level（影响程度/风险等级）",
     "confirm_type": "请确认是「项目工时」还是「非项目工时」",
     "remark": "请向用户索取备注说明",
