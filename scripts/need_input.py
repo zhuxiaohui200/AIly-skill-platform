@@ -28,7 +28,9 @@ PARAM_LABELS: dict[str, str] = {
     "module": "模块",
     "type": "类型",
     "status": "状态",
-    "keywords": "关键词",
+    "task_options": "任务选项（指派人所属组）",
+    "option_ids": "任务选项 ID",
+    "option_names": "任务选项名称",
 }
 
 PARAM_HINTS: dict[str, str] = {

@@ -227,6 +227,7 @@ UTILITY_READ_OPS = frozenset(
         "get_project_moment_config_list",
         "get_apply_demand_consts",
         "get_ecp_baojia_const",
+        "get_task_options",
     }
 )
 

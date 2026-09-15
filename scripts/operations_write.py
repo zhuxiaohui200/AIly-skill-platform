@@ -1016,6 +1016,44 @@ def _normalize_task_status(value: Any, *, default: str = "doing") -> str:
     return mapped or text
 
 
+# 与网页端 DemandOneTypeOptions / TaskSplitTypeOptions 一致：3 非产出 / 4 产出 / 0 同上
+_ONE_TYPE_MAP: dict[str, int] = {
+    "3": 3,
+    "非产出": 3,
+    "non_output": 3,
+    "non-output": 3,
+    "4": 4,
+    "产出": 4,
+    "output": 4,
+    "0": 0,
+    "同上": 0,
+    "same": 0,
+}
+
+
+def _normalize_one_type(value: Any, *, default: int = 3) -> int:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        iv = int(value)
+        return iv if iv in (0, 3, 4) else default
+    text = str(value).strip()
+    if not text:
+        return default
+    if text in _ONE_TYPE_MAP:
+        return _ONE_TYPE_MAP[text]
+    lower = text.lower()
+    if lower in _ONE_TYPE_MAP:
+        return _ONE_TYPE_MAP[lower]
+    try:
+        iv = int(float(text))
+        return iv if iv in (0, 3, 4) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _resolve_add_not_project_demand(params: dict[str, Any]) -> dict[str, Any]:
     out = _resolve_not_project_id_value(dict(params))
     out = _resolve_assigned_to_list(out)
@@ -1034,12 +1072,26 @@ def _resolve_add_not_project_demand(params: dict[str, Any]) -> dict[str, Any]:
 
 def _resolve_add_not_project_task(params: dict[str, Any]) -> dict[str, Any]:
     import api_client
+    from need_input import build_need_input_payload
+    from task_options import (
+        compose_task_name,
+        fetch_task_option_groups,
+        fetch_user_info,
+        list_choices,
+        preferred_dept_from_user,
+        resolve_option_ids,
+        sort_tree_for_assignee,
+    )
 
     out = _resolve_not_project_id_value(dict(params))
     out = api_client._apply_field_aliases(out, {"pid": ("demand_id",)})
     assignee = out.pop("assignee_name", None) or out.pop("user_name", None)
     if assignee and not out.get("assigned_to"):
         out["assigned_to"] = int(api_client.resolve_user_id(str(assignee)))
+    # 网页端新建默认指派当前登录人；Skill 由调用方注入 _actor_user_id
+    actor_uid = out.pop("_actor_user_id", None)
+    if out.get("assigned_to") in (None, "") and actor_uid not in (None, ""):
+        out["assigned_to"] = int(actor_uid)
     if out.get("project_id") not in (None, ""):
         out["project_id"] = int(out["project_id"])
     if out.get("pid") not in (None, ""):
@@ -1048,10 +1100,112 @@ def _resolve_add_not_project_task(params: dict[str, Any]) -> dict[str, Any]:
         out["assigned_to"] = int(out["assigned_to"])
     if out.get("plan_hour") not in (None, ""):
         out["plan_hour"] = float(out["plan_hour"])
-    if out.get("option_ids") and not isinstance(out.get("option_ids"), list):
-        out["option_ids"] = api_client._parse_int_list(out["option_ids"])
-    # 与网页端 TaskBatchCreateDialog / ManagementWorkHourEntry 一致：默认 doing
+    # 产出类型：可用 one_type / output_type / 产出|非产出；未传时与网页端一致默认非产出(3)
+    if out.get("one_type") in (None, "") and out.get("output_type") not in (None, ""):
+        out["one_type"] = out.pop("output_type")
+    else:
+        out.pop("output_type", None)
+    out["one_type"] = _normalize_one_type(out.get("one_type"), default=3)
+    # 与网页端一致：默认 doing
     out["status"] = _normalize_task_status(out.get("status"), default="doing")
+
+    # —— 任务选项（与网页端一致：按指派人所属组优先，名称自动拼接）——
+    leave_project = int(out.get("project_id") or 0) == 1496
+    raw_option_ids = out.pop("option_ids", None)
+    raw_option_names = (
+        out.pop("task_options", None)
+        or out.pop("option_names", None)
+        or out.pop("task_option_names", None)
+    )
+    # allow task_options to carry numeric ids
+    if raw_option_ids in (None, "") and raw_option_names not in (None, ""):
+        # if all tokens look numeric, treat as ids
+        tokens = [
+            t.strip()
+            for t in str(raw_option_names).replace("，", ",").split(",")
+            if str(t).strip()
+        ]
+        if tokens and all(re.fullmatch(r"\d+", t) for t in tokens):
+            raw_option_ids = raw_option_names
+            raw_option_names = None
+
+    if not leave_project:
+        groups = fetch_task_option_groups(api_client.api_request)
+        preferred_dept = ""
+        if out.get("assigned_to"):
+            preferred_dept = preferred_dept_from_user(
+                fetch_user_info(api_client.api_request, int(out["assigned_to"]))
+            )
+        tree = sort_tree_for_assignee(groups, preferred_dept)
+        option_ids = resolve_option_ids(
+            tree,
+            option_ids=raw_option_ids,
+            option_names=raw_option_names,
+            preferred_dept=preferred_dept,
+        )
+        if not option_ids:
+            choices = list_choices(tree, preferred_dept=preferred_dept)
+            preferred_choices = [c for c in choices if c.get("preferred")] or choices[:40]
+            payload = build_need_input_payload(
+                "add_not_project_task",
+                WRITE_OPERATIONS["add_not_project_task"],
+                missing_fields=["task_options"],
+                message=(
+                    "创建非项目任务需选择指派人所属组的「任务选项」；"
+                    "选项会拼进任务名称（与网页端一致）。"
+                ),
+                provided={
+                    k: out.get(k)
+                    for k in (
+                        "project_id",
+                        "pid",
+                        "name",
+                        "assigned_to",
+                        "start_date",
+                        "end_date",
+                        "plan_hour",
+                    )
+                },
+            )
+            payload["preferred_dept"] = preferred_dept or None
+            payload["task_option_choices"] = preferred_choices
+            payload["form"] = [
+                {
+                    "name": "task_options",
+                    "label": "任务选项",
+                    "type": "select",
+                    "hint": (
+                        f"优先选指派人组「{preferred_dept or '未知'}」下的选项；"
+                        "可多选，传 path 或 id，例如 平台研发-后端开发 或 option_ids=12,34"
+                    ),
+                    "choices": [
+                        {"value": c["path"], "label": f"{c['path']}（{c['dept_name']}）"}
+                        for c in preferred_choices
+                    ],
+                }
+            ]
+            payload["next_step"] = (
+                "把 task_option_choices 展示给用户选择后，带 "
+                "--param task_options 平台研发-后端开发 "
+                "或 --param option_ids 12,34 重试（可多选）"
+            )
+            raise api_client.ClientError(
+                "need_input", json.dumps(payload, ensure_ascii=False)
+            )
+        out["option_ids"] = option_ids
+        base_name = str(out.get("name") or "").strip()
+        out["name"] = compose_task_name(
+            base_name,
+            option_ids=option_ids,
+            tree=tree,
+            hour=out.get("plan_hour"),
+        )
+    else:
+        if raw_option_ids not in (None, ""):
+            out["option_ids"] = api_client._parse_int_list(raw_option_ids)
+        elif out.get("option_ids") and not isinstance(out.get("option_ids"), list):
+            out["option_ids"] = api_client._parse_int_list(out["option_ids"])
+
     return out
 
 
@@ -2082,7 +2236,7 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
         },
     },
     "add_not_project_task": {
-        "description": "【写】新增非项目任务",
+        "description": "【写】新增非项目任务（须选任务选项并按指派人组优先；未传指派人默认当前用户；未传产出类型默认非产出）",
         "method": "POST",
         "path": "/manage_api/project_not_task/add_task",
         "write": True,
@@ -2094,11 +2248,19 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
             "pid",
             "demand_id",
             "name",
+            "desc",
             "start_date",
             "end_date",
             "plan_hour",
             "assigned_to",
             "assignee_name",
+            "user_name",
+            "one_type",
+            "output_type",
+            "estimate_type",
+            "option_ids",
+            "task_options",
+            "option_names",
             "status",
             "dry_run",
             "confirm",
@@ -2129,7 +2291,28 @@ WRITE_OPERATIONS: dict[str, dict[str, Any]] = {
             "name": b.get("name"),
             "plan_hour": b.get("plan_hour"),
             "status": b.get("status"),
+            "assigned_to": b.get("assigned_to"),
+            "one_type": b.get("one_type"),
+            "one_type_label": {3: "非产出", 4: "产出", 0: "同上"}.get(
+                int(b["one_type"]) if b.get("one_type") not in (None, "") else -1,
+                b.get("one_type"),
+            ),
+            "option_ids": b.get("option_ids"),
         },
+        "preview_warnings": lambda b: [
+            msg
+            for msg, cond in (
+                (
+                    "未指定指派人，请传 assignee_name/user_name，或确认登录用户可作为默认指派人",
+                    not b.get("assigned_to"),
+                ),
+                (
+                    "未选择任务选项 option_ids/task_options（请假类非项目除外）",
+                    not b.get("option_ids") and int(b.get("project_id") or 0) != 1496,
+                ),
+            )
+            if cond
+        ],
     },
     "finish_not_project_task": {
         "description": "【写】完成非项目任务",

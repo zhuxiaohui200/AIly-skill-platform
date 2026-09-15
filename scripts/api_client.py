@@ -1346,8 +1346,17 @@ def run_operation(name: str, params: dict[str, Any]) -> Any:
                 )
         if meta.get("write"):
             wparams, control = extract_write_control(dict(work_params))
+            # 非项目新建任务：与网页端一致，缺省指派当前登录人
+            if name == "add_not_project_task" and ctx is not None:
+                has_assignee = any(
+                    str(wparams.get(k) or "").strip()
+                    for k in ("assigned_to", "assignee_name", "user_name")
+                )
+                if not has_assignee and ctx.user_id:
+                    wparams["_actor_user_id"] = int(ctx.user_id)
             resolve_mode = meta.get("write_resolve_mode")
             resolved = resolve_write(resolve_mode, wparams) if resolve_mode else wparams
+            resolved.pop("_actor_user_id", None)
             batch_ids = resolved.pop("_batch_ids", None)
             body_keys = meta.get("body_params", [])
             if batch_ids and not control.confirm and not control.force:

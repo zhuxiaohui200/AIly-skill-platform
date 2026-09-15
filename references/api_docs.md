@@ -711,7 +711,8 @@ python3 scripts/api_client.py add_project_task_estimate \
 | `finish_project_task` | `POST project_task/finish` | 完成任务 |
 | `save_project_overview_value` | `POST project_overview/save_value` | 保存项目价值 |
 | `add_not_project_demand` | `POST project_not_task/add` | 新增非项目需求 |
-| `add_not_project_task` | `POST project_not_task/add_task` | 新增非项目任务；未传 `status` 时默认 `doing`（进行中） |
+| `add_not_project_task` | `POST project_not_task/add_task` | 新增非项目任务；未传 `status` 默认 `doing`；未传指派人默认当前用户；未传 `one_type`/`output_type` 默认 `3`（非产出）；须传 `task_options`/`option_ids`（按指派人四级部门优先匹配任务选项并拼进任务名，可用 `get_task_options` 查字典；请假非项目 id=1496 除外） |
+| `get_task_options` | `GET index/get_task_options` | 任务选项字典（按部门分组的一/二级选项） |
 | `finish_not_project_task` | `POST project_not_task/finish_task` | 完成非项目任务 |
 | `update_not_project_estimate` | `PUT project_not_task_estimate/update` | 更新非项目任务工时；已确认或历史不可改 |
 | `add_apply_demand` | `POST produce_demand/add_apply_demand` | 新增申请制作需求 |

@@ -624,6 +624,15 @@ READ_ENHANCED_OPERATIONS: dict[str, dict[str, Any]] = {
         "upstream_params": [],
         "dictionary": True,
     },
+    "get_task_options": {
+        "description": "任务选项字典（按部门分组；创建非项目任务时配合 option_ids/task_options，优先匹配指派人所属组）",
+        "method": "GET",
+        "path": "/manage_api/index/get_task_options",
+        "group": "其他",
+        "params": [],
+        "upstream_params": [],
+        "dictionary": True,
+    },
 }
 
 READ_ENHANCED_RESOLVE_MODES = frozenset(
