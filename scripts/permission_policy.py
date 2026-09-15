@@ -843,9 +843,17 @@ def load_permission_context_from_session(
     if user_id is None and nick_name_fallback and resolve_user_id is not None:
         user_id = int(resolve_user_id(nick_name_fallback))
     if user_id is None:
+        from auth_session import AuthRequired, build_ecp_login_url, load_auth_config
+
+        # Reuse standard auth_required payload (JSON), not a bare string —
+        # bare strings break Aily agents that expect login_url in the body.
+        payload = AuthRequired(
+            "登录会话缺少 user_id，请让用户重新登录后重试业务命令",
+            login_url=build_ecp_login_url(load_auth_config({})),
+        ).to_payload()
         raise api_client.ClientError(
             "auth_required",
-            "登录会话缺少 user_id，请让用户重新登录后重试业务命令",
+            json.dumps(payload, ensure_ascii=False),
         )
     root_id = user_info.get("root_id")
     meta = role_meta_from_root_id(root_id)

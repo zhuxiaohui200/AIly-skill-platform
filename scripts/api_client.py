@@ -121,9 +121,8 @@ _AUTH_RUNTIME: dict[str, Any] = {}
 
 def _set_auth_runtime(auth_cfg: Any, access_token: str = "") -> None:
     _AUTH_RUNTIME["auth_cfg"] = auth_cfg
-    token = str(access_token or "").strip()
-    if token:
-        _AUTH_RUNTIME["access_token"] = token
+    # Always assign: empty string must clear a stale token from a prior resolve.
+    _AUTH_RUNTIME["access_token"] = str(access_token or "").strip()
 
 
 def _runtime_access_token() -> str | None:
@@ -1199,24 +1198,30 @@ def _resolve_permission_context(params: dict[str, Any]) -> Any:
         )
     except AuthRequired as e:
         invalidate_session(auth_cfg)
+        _clear_auth_runtime()
         raise ClientError("auth_required", json.dumps(e.to_payload(), ensure_ascii=False))
     except AuthIdentityRequired as e:
+        _clear_auth_runtime()
         raise ClientError("identity_required", json.dumps(e.to_payload(), ensure_ascii=False))
     _set_auth_runtime(auth_cfg, str(session["access_token"]))
     user_info = session.get("user_info") or {}
     nick_fallback = str(user_info.get("nick_name") or "")
-    ctx = load_permission_context_from_session(
-        user_info=user_info,
-        access_token=str(session["access_token"]),
-        resolve_user_id=resolve_user_id,
-        nick_name_fallback=nick_fallback,
-    )
-    enrich_permission_context(
-        ctx,
-        api_request=api_request,
-        list_items=_list_items_from_response,
-        fetch_flat_departments=_fetch_flat_departments,
-    )
+    try:
+        ctx = load_permission_context_from_session(
+            user_info=user_info,
+            access_token=str(session["access_token"]),
+            resolve_user_id=resolve_user_id,
+            nick_name_fallback=nick_fallback,
+        )
+        enrich_permission_context(
+            ctx,
+            api_request=api_request,
+            list_items=_list_items_from_response,
+            fetch_flat_departments=_fetch_flat_departments,
+        )
+    except Exception:
+        _clear_auth_runtime()
+        raise
     return ctx, ctx.nick_name
 
 
@@ -1576,13 +1581,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         reject_tampered_identity_params(param_map)
-        ctx = None
-        try:
-            ctx, _actor = _resolve_permission_context(param_map)
-        except ClientError as e:
-            if e.error not in ("auth_required", "identity_required") or args.list_ops or args.list_ops_grouped:
-                raise
+        # --list-ops 才预换票（用于按角色过滤）；业务命令只走 run_operation，
+        # 避免 CLI 双重 ensure_token / 吞掉 auth_required 后留下脏 _AUTH_RUNTIME，
+        # 出现「进程内 run_operation 成功、CLI 子进程却 auth_required」的差异。
         if args.list_ops or args.list_ops_grouped:
+            ctx = None
+            try:
+                ctx, _actor = _resolve_permission_context(param_map)
+            except ClientError as e:
+                if e.error not in ("auth_required", "identity_required"):
+                    raise
+            finally:
+                _clear_auth_runtime()
             print(
                 json.dumps(
                     list_operations(grouped=args.list_ops_grouped, ctx=ctx),
@@ -1633,4 +1643,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Running as `python scripts/api_client.py` loads this file as __main__,
+    # while operations_* do `import api_client` → a second module object.
+    # Token lives on __main__._AUTH_RUNTIME; the other copy stays empty →
+    # CLI always auth_required while in-process import api_client works.
+    sys.modules["api_client"] = sys.modules[__name__]
     sys.exit(main())
