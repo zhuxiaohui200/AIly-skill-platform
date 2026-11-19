@@ -234,9 +234,14 @@ UTILITY_READ_OPS = frozenset(
 # 不做本地人/部门/项目范围校验，也不裁剪响应（登录即可查任意部门成员）
 UNSCOPED_READ_OPS = frozenset({"get_dept_members"})
 
-PRIVILEGED_ONLY_READ_PREFIXES = (
+# 供应商/外包读接口：默认仅特权角色；四级负责人（GL）单独放行且可看全量
+SUPPLIER_OUTSOURCE_READ_PREFIXES = (
     "get_supplier_",
     "get_outsource_",
+)
+
+PRIVILEGED_ONLY_READ_PREFIXES = (
+    *SUPPLIER_OUTSOURCE_READ_PREFIXES,
     "get_dept_capacity_",
     "get_dept_left_hour_",
     "get_qa_stat_",
@@ -421,8 +426,11 @@ def classify_read_access(operation: str, role: str) -> OperationAccess:
             )
         return OperationAccess(False, "TB/BD 仅可查看属于自己项目的相关数据")
     if role == "GL":
+        # 四级负责人可查全部供应商/外包读接口（不做本地范围裁剪）
+        if _is_supplier_outsource_read(operation):
+            return OperationAccess(True, read_scope=DataScope.ALL)
         if _is_privileged_only_read(operation):
-            return OperationAccess(False, "四级负责人无权访问该组织级统计/供应商/外包模块")
+            return OperationAccess(False, "四级负责人无权访问该组织级统计模块")
         if operation.startswith("get_"):
             return OperationAccess(True, read_scope=DataScope.TEAM)
         return OperationAccess(False, "四级负责人仅可查看权限范围内的数据")
@@ -470,6 +478,10 @@ def check_operation_access(
     if meta.get("write"):
         return classify_write_access(operation, ctx.role)
     return classify_read_access(operation, ctx.role)
+
+
+def _is_supplier_outsource_read(operation: str) -> bool:
+    return any(operation.startswith(p) for p in SUPPLIER_OUTSOURCE_READ_PREFIXES)
 
 
 def _is_privileged_only_read(operation: str) -> bool:
