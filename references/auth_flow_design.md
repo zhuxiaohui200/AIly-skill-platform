@@ -12,7 +12,9 @@
 
 Skill **不**扫描环境变量、**不**调飞书 API、**不**手填 Token。
 
-本地 IDE（Cursor / VS Code / Copilot 等）请使用 **51PM_CLI**（`51pm login --browser`），不在本仓库做浏览器落 Token。
+> **飞书 Aily Agent 禁止**向用户说 `51pm login --browser` 或任何本地终端登录步骤。  
+> `auth_required` 时只发 `http://51pm.51aes.com:771` 或 CLI 返回的 `login_url`。  
+> `51pm login --browser` **仅**供开发者在本地 Cursor/IDE 调试 51PM_CLI 时使用，与飞书 Skill 无关。
 
 ## 保存身份（智能体执行，仅首次）
 

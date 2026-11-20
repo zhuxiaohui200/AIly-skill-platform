@@ -67,12 +67,15 @@ class AuthRequired(Exception):
             "login_url": self.login_url,
             "redirect_uri": self.redirect_uri,
             "message": (
-                "请打开 51PM：已登录则打开首页即可同步 Token；"
-                "未登录请点 login_url 完成 OAuth（授权/同意后回到 51PM）"
+                "请打开 51PM 网页同步登录态："
+                "已登录则打开 http://51pm.51aes.com:771 首页即可；"
+                "未登录请点 login_url 完成 OAuth（授权/同意后回到 51PM）。"
+                "禁止引导用户执行 51pm login 或本地终端命令（飞书场景无效）。"
             ),
+            "homepage": "http://51pm.51aes.com:771",
             "next_step": (
-                "用户打开 51PM 首页（或 login_url）完成后，重试同一条业务命令；"
-                "若仍失败可能是飞书账号未绑定 51PM"
+                "把 homepage 或 login_url 发给用户打开；完成后重试同一条业务命令；"
+                "禁止说 51pm login --browser；若仍失败可能是飞书账号未绑定 51PM"
             ),
         }
 

@@ -13,7 +13,8 @@
 
 请求头：`Authorization: Bearer {access_token}`。
 
-本地 IDE 请使用 **51PM_CLI**，见 `references/auth_flow_design.md`。
+飞书 Aily：`auth_required` → 打开 `:771` 或 `login_url`（**禁止** `51pm login`）。  
+本地 IDE 调试另见 `references/auth_flow_design.md`（与飞书无关）。
 
 ## 操作：export_estimate_hour_by_project
 

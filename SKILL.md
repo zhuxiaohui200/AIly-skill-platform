@@ -62,9 +62,17 @@ CLI 返回 `"error": "permission_denied"` 且 `"terminal": true` 时：
 | 禁止 |
 |------|
 | 调 lark-cli / 飞书通讯录代替 save-identity |
+| **`51pm login --browser` / 任何「请用户在终端执行 51pm」**（那是本地 Cursor IDE 用的，**飞书 Aily 场景绝对禁止**） |
 | `auth --param action set-token` / F12 手动 Token |
 | 业务命令传 `--param union_id` / `email` |
 | 读 `auth_session.py` 探索实现 |
+| 引导用户打开 `:218`（那是 API 后端，不是登录页） |
+
+**`auth_required` 时只能二选一发给用户：**
+1. `http://51pm.51aes.com:771`（已登录打开首页即可同步）
+2. CLI 返回的 `login_url`（未登录走 OAuth）
+
+**禁止**编造 `51pm login`、PowerShell、CMD、本地终端安装 CLI 等步骤。
 
 ### 填工时：项目 ≠ 非项目（禁止混写）
 
@@ -132,12 +140,14 @@ python3 scripts/api_client.py get_publish_list \
 
 ### 登录失效 → auth_required
 
-1. 把 `login_url`（或 51PM 首页）发给用户  
+1. 把 `login_url` **或** `http://51pm.51aes.com:771` 发给用户（可直接点开的链接）  
 2. **已登录**：打开 51PM 等到首页即可（会同步 Token 缓存）  
 3. **未登录**：走 OAuth，点授权/同意后再回 51PM  
 4. 用户确认后**重试原业务命令**（不要执行 auth 子命令）
 
 若仍失败：可能是飞书账号未绑定 51PM，不要无限重试登录链接。
+
+**错误示范（飞书里绝对不要说）：**「请在终端执行 `51pm login --browser`」——用户在飞书里没有这个命令。
 
 使用 CLI：
 
