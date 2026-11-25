@@ -191,7 +191,10 @@ python3 scripts/api_client.py get_bug_list --fetch-all --param project_name 某�
 
 **禁止**把 `role=GL` 的用户描述成「组员」或「GL·组员」。权限拒绝时看 `actor.role_label` 与 `detail`；GL（四级负责人）被拒通常是因为**目标部门不在其负责/所在部门范围内**。
 
-例外：`get_supplier_*` / `get_outsource_*`（21 个供应商/外包读接口）对 GL **放行且全量可见**（不做本地范围裁剪）；其余组织级统计（如 `get_qa_stat_*`、`get_project_list`）仍仅特权角色。
+例外：
+- `get_supplier_*` / `get_outsource_*`（21 个）对 GL **放行且全量可见**
+- 工程人力/排期（`get_employee_project_*`、`get_employee_estimate_list`、`get_total_schedule_list`、`get_all_times_list`）对 GL **放行但限组内**；未指定人/部门时默认查「我们组」
+- 其余组织级统计（如 `get_qa_stat_*`、`get_project_list`）仍仅特权角色
 
 ### 查询范围纪律（必守）
 

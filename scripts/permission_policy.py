@@ -240,16 +240,27 @@ SUPPLIER_OUTSOURCE_READ_PREFIXES = (
     "get_outsource_",
 )
 
+# 工程人力/排期（对齐平台权限「工程人力」）：GL 可查，范围限组内（TEAM）
+# 排期列表 / 排期分布 / 排期分布花费详情 / 排期总览 + 当月工时矩阵
+GL_TEAM_SCHEDULE_READ_PREFIXES = (
+    "get_employee_project_",
+)
+GL_TEAM_SCHEDULE_READ_EXACT = frozenset(
+    {
+        "get_employee_estimate_list",
+        "get_total_schedule_list",
+        "get_all_times_list",
+    }
+)
+
 PRIVILEGED_ONLY_READ_PREFIXES = (
     *SUPPLIER_OUTSOURCE_READ_PREFIXES,
     "get_dept_capacity_",
     "get_dept_left_hour_",
     "get_qa_stat_",
     "get_performance_",
-    "get_all_times_list",
-    "get_employee_estimate_list",
-    "get_total_schedule_list",
-    "get_employee_project_",
+    *GL_TEAM_SCHEDULE_READ_PREFIXES,
+    *GL_TEAM_SCHEDULE_READ_EXACT,
     "get_user_project",
     "get_user_project_panel",
     "get_scene_group_project",
@@ -429,6 +440,9 @@ def classify_read_access(operation: str, role: str) -> OperationAccess:
         # 四级负责人可查全部供应商/外包读接口（不做本地范围裁剪）
         if _is_supplier_outsource_read(operation):
             return OperationAccess(True, read_scope=DataScope.ALL)
+        # 工程人力/排期：可查，但仅组内（负责部门/子部门成员）
+        if _is_gl_team_schedule_read(operation):
+            return OperationAccess(True, read_scope=DataScope.TEAM)
         if _is_privileged_only_read(operation):
             return OperationAccess(False, "四级负责人无权访问该组织级统计模块")
         if operation.startswith("get_"):
@@ -482,6 +496,12 @@ def check_operation_access(
 
 def _is_supplier_outsource_read(operation: str) -> bool:
     return any(operation.startswith(p) for p in SUPPLIER_OUTSOURCE_READ_PREFIXES)
+
+
+def _is_gl_team_schedule_read(operation: str) -> bool:
+    if operation in GL_TEAM_SCHEDULE_READ_EXACT:
+        return True
+    return any(operation.startswith(p) for p in GL_TEAM_SCHEDULE_READ_PREFIXES)
 
 
 def _is_privileged_only_read(operation: str) -> bool:

@@ -1077,6 +1077,7 @@ from skill_enhancements import (
 )
 from write_protocol import execute_write, execute_write_batch, extract_write_control, pick_body
 from permission_policy import (
+    _is_gl_team_schedule_read,
     check_operation_access,
     enrich_permission_context,
     enforce_param_scope,
@@ -1089,7 +1090,7 @@ from permission_policy import (
     actor_payload,
 )
 from need_input import build_need_input_payload, collect_missing_required
-from team_scope import apply_my_team_scope
+from team_scope import apply_my_team_scope, _SCOPE_PARAM_KEYS
 from auth_session import (
     AuthIdentityRequired,
     AuthRequired,
@@ -1321,6 +1322,18 @@ def run_operation(name: str, params: dict[str, Any]) -> Any:
         ctx, _act_as = _resolve_permission_context(work_params)
         token = ctx.token if ctx else None
         if ctx is not None:
+            # 四级负责人查工程人力/排期且未指定人/部门时，默认落在「我们组」
+            if (
+                ctx.role == "GL"
+                and _is_gl_team_schedule_read(name)
+                and not any(
+                    work_params.get(k) not in (None, "", [], 0)
+                    for k in _SCOPE_PARAM_KEYS
+                )
+                and work_params.get("my_team_scope") in (None, "")
+                and work_params.get("team_scope") in (None, "")
+            ):
+                work_params["my_team_scope"] = "1"
             work_params, team_scope_meta = apply_my_team_scope(
                 work_params,
                 user_id=ctx.user_id,
